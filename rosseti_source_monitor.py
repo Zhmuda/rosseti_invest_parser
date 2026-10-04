@@ -655,6 +655,12 @@ class Telegram:
             }]]}, ensure_ascii=False),
         })
 
+    def send_status_message(self, text: str) -> None:
+        self.call("sendMessage", {
+            "chat_id": self.chat_id,
+            "text": text,
+        })
+
     def send_document(self, path: Path) -> None:
         boundary = "----Energo" + uuid.uuid4().hex
         chunks: list[bytes] = []
@@ -688,7 +694,7 @@ class Telegram:
         return self.call("getUpdates", {
             "offset": offset,
             "timeout": 1,
-            "allowed_updates": json.dumps(["callback_query"]),
+            "allowed_updates": json.dumps(["message", "callback_query"]),
         }).get("result", [])
 
     def answer(self, callback_id: str, text: str) -> None:
@@ -752,6 +758,7 @@ def main() -> int:
     parser.add_argument("--debug", action="store_true", help="сохранить отладочные сообщения о найденных ссылках")
     args = parser.parse_args()
     setup_logging(args.debug)
+    logging.info("Монитор запущен: проверка источников выполняется ежедневно с 07:00 до 00:00 по Москве")
     token = os.getenv("ROSSETI_TELEGRAM_BOT_TOKEN") or os.getenv("TELEGRAM_BOT_TOKEN", "")
     chat_id = os.getenv("ROSSETI_TELEGRAM_CHAT_ID") or os.getenv("TELEGRAM_CHAT_ID", "")
     telegram = None if args.download_only else Telegram(token, chat_id)
@@ -879,6 +886,17 @@ def main() -> int:
         try:
             for update in telegram.updates(offset):
                 offset = max(offset, int(update["update_id"]) + 1)
+                message = update.get("message") or {}
+                command = (message.get("text") or "").split()[0].lower() if message.get("text") else ""
+                if command in {"/start", "/help"}:
+                    telegram.send_status_message(
+                        "Монитор источников Россетей работает.\n\n"
+                        "РСБУ проверяется с 10 октября по 10 ноября.\n"
+                        "Приказы Минэнерго проверяются с 10 по 31 декабря.\n\n"
+                        "Проверка выполняется ежечасно с 07:00 до 00:00 по Москве.\n"
+                        "После нахождения документа он отправляется сюда, а источник автоматически переводится в ожидание следующего года."
+                    )
+                    continue
                 callback = update.get("callback_query") or {}
                 data = callback.get("data", "")
                 if not data.startswith("stop:"):
