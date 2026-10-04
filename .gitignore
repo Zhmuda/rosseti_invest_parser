@@ -1,6 +1,7 @@
 .env
 __pycache__/
 .idea/
+data/
 data/rossetti_ipr_orders/monitor/
 data/rossetti_source_monitor.sqlite3
 data/rossetti_ipr_orders/*.log
