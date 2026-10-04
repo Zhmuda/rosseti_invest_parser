@@ -1,0 +1,14 @@
+services:
+  rosseti-source-monitor:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    env_file:
+      - .env
+    environment:
+      ROSSETI_START_YEAR: "2026"
+      ROSSETI_POLL_SECONDS: "3600"
+      TZ: Europe/Moscow
+    volumes:
+      - ./data:/app/data
+    restart: unless-stopped
