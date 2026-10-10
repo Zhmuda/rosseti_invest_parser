@@ -85,6 +85,27 @@ SOURCE_TICKERS = {
     "rsbu_lsng": "LSNG", "ipr_lsng": "LSNG",
     "rsbu_yug": "MRKY", "ipr_yug": "MRKY",
 }
+COMPANY_NAMES = {
+    "volga": COMPANY_NAME,
+    "center": CENTER_COMPANY_NAME,
+    "sz": SZ_COMPANY_NAME,
+    "lsng": LSNG_COMPANY_NAME,
+    "yug": YUG_COMPANY_NAME,
+}
+COMPANY_SOURCES = {
+    "volga": ("rsbu", "ipr"),
+    "center": ("rsbu_center", "ipr_center"),
+    "sz": ("rsbu_sz", "ipr_sz"),
+    "lsng": ("rsbu_lsng", "ipr_lsng"),
+    "yug": ("rsbu_yug", "ipr_yug"),
+}
+COMPANY_ALIASES = {
+    "волга": "volga", "mrkv": "volga",
+    "центр": "center", "цент": "center", "mrkc": "center",
+    "сз": "sz", "северо-запад": "sz", "северозапад": "sz", "mrkz": "sz",
+    "ленэнерго": "lsng", "лен": "lsng", "lsng": "lsng",
+    "юг": "yug", "mrky": "yug",
+}
 MSK = ZoneInfo("Europe/Moscow")
 USER_AGENT = "Energo-Rosseti-Source-Monitor/1.0"
 BROWSER_USER_AGENT = (
@@ -508,6 +529,11 @@ def find_yug_rsbu_report(year: int, timeout: int) -> tuple[str, str, str]:
     period_re = re.compile(
         rf"(?:январ\w*\s*[-–—]\s*сентябр\w*|9\s*месяц\w*)[^\d]{{0,40}}{year}", re.I
     )
+    accounting_re = re.compile(
+        r"(?:бухгалтерск\w*\s*(?:\(\s*финансов\w*\s*\))?\s*отчетност\w*|"
+        r"финансов\w*\s*отчетност\w*|рсбу)",
+        re.I,
+    )
     filename_re = re.compile(rf"(?:9|yanvar|сентябр)[^/]*{year}[^/]*\.pdf", re.I)
     for page_url, page in pages:
         parser = LinkParser()
@@ -520,16 +546,26 @@ def find_yug_rsbu_report(year: int, timeout: int) -> tuple[str, str, str]:
             position = page.find(href)
             nearby = page[max(0, position - 2500):position + 1500] if position >= 0 else ""
             searchable = normalized(f"{text} {decoded_url}")
-            if re.search(r"(?:мсфо|ifrs|консолидирован)", searchable, re.I):
+            context = normalized(f"{searchable} {nearby}")
+            if re.search(r"(?:мсфо|ifrs|консолидирован)", context, re.I):
                 continue
-            if period_re.search(searchable) or period_re.search(normalized(nearby)) or filename_re.search(decoded_url):
+            if accounting_re.search(context) and (
+                period_re.search(context) or filename_re.search(decoded_url)
+            ):
                 return f"Бухгалтерская (финансовая) отчетность за январь - сентябрь {year} года", url, "не указана"
 
         raw_pdf_re = re.compile(r"[\"']([^\"']+\.pdf(?:\?[^\"']*)?)[\"']", re.I)
         for raw_href in raw_pdf_re.findall(page):
             url = urllib.parse.urljoin(page_url, html.unescape(raw_href))
             decoded_url = urllib.parse.unquote(url)
-            if not re.search(r"(?:мсфо|ifrs|консолидирован)", decoded_url, re.I) and filename_re.search(decoded_url):
+            position = page.find(raw_href)
+            nearby = page[max(0, position - 2500):position + 1500] if position >= 0 else ""
+            context = normalized(f"{decoded_url} {nearby}")
+            if (
+                not re.search(r"(?:мсфо|ifrs|консолидирован)", context, re.I)
+                and accounting_re.search(context)
+                and (period_re.search(context) or filename_re.search(decoded_url))
+            ):
                 return f"Бухгалтерская (финансовая) отчетность за январь - сентябрь {year} года", url, "не указана"
     raise RuntimeError(f"РСБУ «Россети Юг» за январь - сентябрь {year} года не найден")
 
@@ -654,11 +690,14 @@ class Telegram:
             }]]}, ensure_ascii=False),
         })
 
-    def send_status_message(self, text: str) -> None:
-        self.call("sendMessage", {
+    def send_status_message(self, text: str, force_reply: bool = False) -> dict:
+        payload = {
             "chat_id": self.chat_id,
             "text": text,
-        })
+        }
+        if force_reply:
+            payload["reply_markup"] = json.dumps({"force_reply": True, "selective": True})
+        return self.call("sendMessage", payload)
 
     def send_document(self, path: Path) -> None:
         boundary = "----Energo" + uuid.uuid4().hex
@@ -743,6 +782,30 @@ def poll_source(source: str, target_year: int, timeout: int) -> tuple[str, str, 
     if source == "ipr_yug":
         return find_ipr_report(target_year, timeout, YUG_CODE, YUG_COMPANY_NAME)
     return find_ipr_report(target_year, timeout, RSBU_CODE, COMPANY_NAME)
+
+
+def company_key_for_source(source: str) -> str:
+    for key, company_sources in COMPANY_SOURCES.items():
+        if source in company_sources:
+            return key
+    return "volga"
+
+
+def history_response(state: State, company_key: str) -> str:
+    lines = [f"История анализа: {COMPANY_NAMES[company_key]}"]
+    has_entries = False
+    for source in COMPANY_SOURCES[company_key]:
+        source_state = state.get(source, {"target_year": 2026, "status": "waiting"})
+        entries = source_state.get("history", [])
+        if not entries:
+            continue
+        has_entries = True
+        lines.append(f"\n{source}:")
+        for entry in entries:
+            lines.append(f"{entry.get('created_at', 'дата не указана')}:\n{entry.get('text', '')}")
+    if not has_entries:
+        lines.append("\nСохранённых результатов пока нет.")
+    return "\n".join(lines)[-3900:]
 
 
 def main() -> int:
@@ -886,16 +949,52 @@ def main() -> int:
             for update in telegram.updates(offset):
                 offset = max(offset, int(update["update_id"]) + 1)
                 message = update.get("message") or {}
-                command = (message.get("text") or "").split()[0].lower() if message.get("text") else ""
+                message_text = (message.get("text") or "").strip()
+                command = message_text.split()[0].lower() if message_text else ""
                 if command in {"/start", "/help"}:
                     telegram.send_status_message(
                         "Монитор источников Россетей работает.\n\n"
                         "РСБУ проверяется с 10 октября по 10 ноября.\n"
                         "Приказы Минэнерго проверяются с 10 по 31 декабря.\n\n"
                         "Проверка выполняется ежечасно с 07:00 до 00:00 по Москве.\n"
-                        "После нахождения документа он отправляется сюда, а источник автоматически переводится в ожидание следующего года."
+                        "После нахождения документа он отправляется сюда, а источник автоматически переводится в ожидание следующего года.\n\n"
+                        "Команды истории: /history volga, /history center, /history sz, /history lsng, /history yug."
                     )
                     continue
+                if command in {"/history", "/история"}:
+                    parts = message_text.split(maxsplit=1)
+                    requested = parts[1].strip().lower() if len(parts) > 1 else ""
+                    if requested in {"all", "все"}:
+                        response = "\n\n".join(history_response(state, key) for key in COMPANY_NAMES)
+                    else:
+                        company_key = COMPANY_ALIASES.get(requested, requested)
+                        response = (
+                            history_response(state, company_key)
+                            if company_key in COMPANY_NAMES
+                            else "Укажите компанию: volga, center, sz, lsng или yug."
+                        )
+                    telegram.send_status_message(response[-3900:])
+                    continue
+                reply_to = message.get("reply_to_message") or {}
+                if message_text and reply_to.get("message_id"):
+                    saved = False
+                    for source in sources:
+                        source_state = state.get(source, {"target_year": args.year, "status": "waiting"})
+                        if source_state.get("history_prompt_id") != reply_to.get("message_id"):
+                            continue
+                        source_state.setdefault("history", []).append({
+                            "created_at": datetime.now(MSK).strftime("%Y-%m-%d %H:%M:%S"),
+                            "text": message_text,
+                        })
+                        source_state.pop("history_prompt_id", None)
+                        state.put(source, source_state)
+                        telegram.send_status_message(
+                            f"Результаты анализа сохранены: {COMPANY_NAMES[company_key_for_source(source)]}."
+                        )
+                        saved = True
+                        break
+                    if saved:
+                        continue
                 callback = update.get("callback_query") or {}
                 data = callback.get("data", "")
                 if not data.startswith("stop:"):
@@ -908,6 +1007,13 @@ def main() -> int:
                 source_state["status"] = "waiting"
                 source_state["target_year"] = int(source_state.get("target_year", args.year)) + 1
                 source_state["files"] = []
+                prompt = telegram.send_status_message(
+                    f"Анализ источника остановлен для {COMPANY_NAMES[company_key_for_source(source)]}.\n"
+                    f"Следующая проверка запланирована на {source_state['target_year']} год.\n\n"
+                    "Ответьте на это сообщение текстом с результатами анализа — я сохраню их в историю.",
+                    force_reply=True,
+                )
+                source_state["history_prompt_id"] = prompt.get("result", {}).get("message_id")
                 state.put(source, source_state)
                 telegram.answer(callback["id"], "Источник остановлен. Следующая проверка запланирована на следующий год.")
                 logging.info("%s: остановлен кнопкой, следующий год %s", source, source_state["target_year"])
