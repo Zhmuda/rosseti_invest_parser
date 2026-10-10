@@ -96,21 +96,20 @@ DIRECT_OPENER = urllib.request.build_opener(
     urllib.request.ProxyHandler({}),
     urllib.request.HTTPSHandler(context=SSL_CONTEXT),
 )
+INSECURE_DIRECT_OPENER = urllib.request.build_opener(
+    urllib.request.ProxyHandler({}),
+    urllib.request.HTTPSHandler(context=ssl._create_unverified_context()),
+)
 
 
 def open_url(req: urllib.request.Request, timeout: int):
     try:
         return DIRECT_OPENER.open(req, timeout=timeout)
-    except (urllib.error.URLError, urllib.error.HTTPError) as direct_error:
-        logging.warning("Прямой доступ к %s не удался (%s); повторяю через прокси", req.full_url, direct_error)
-        try:
-            return urllib.request.urlopen(req, timeout=timeout, context=SSL_CONTEXT)
-        except urllib.error.URLError as exc:
-            if not isinstance(exc.reason, ssl.SSLCertVerificationError):
-                raise
-            logging.warning("SSL-сертификат %s не прошёл проверку; повторяю через прокси без проверки сертификата", req.full_url)
-            insecure_context = ssl._create_unverified_context()
-            return urllib.request.urlopen(req, timeout=timeout, context=insecure_context)
+    except urllib.error.URLError as direct_error:
+        if not isinstance(direct_error.reason, ssl.SSLCertVerificationError):
+            raise
+        logging.warning("SSL-сертификат %s не прошёл проверку; повторяю прямой запрос без проверки сертификата", req.full_url)
+        return INSECURE_DIRECT_OPENER.open(req, timeout=timeout)
 
 
 def normalized_request_url(url: str) -> str:

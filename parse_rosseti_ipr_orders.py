@@ -10,6 +10,7 @@ import json
 import os
 import re
 import shutil
+import ssl
 import sys
 import urllib.error
 import urllib.parse
@@ -25,6 +26,10 @@ MAIN_PAGE = "https://minenergo.gov.ru/industries/power-industry/investment-progr
 SITE = "https://minenergo.gov.ru"
 MOEX_ISS = "https://iss.moex.com/iss"
 DIRECT_OPENER = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+INSECURE_DIRECT_OPENER = urllib.request.build_opener(
+    urllib.request.ProxyHandler({}),
+    urllib.request.HTTPSHandler(context=ssl._create_unverified_context()),
+)
 RSBU_PAGE = "https://www.rossetivolga.ru/ru/aktsioneram_i_investoram/raskritie_informatsii_obcshestvom_i_otchetnaya_informatsiya/finansovaya_%28buhgalterskaya%29_otchetnost_po_rsbu"
 MOEX_COMPANIES = {
     "pao_federalnaya_setevaya_kompaniya_rosseti": "FEES",
@@ -149,9 +154,11 @@ def fetch(url: str, timeout: int) -> str | bytes:
     request = urllib.request.Request(url, headers={"User-Agent": "Energo-Rosseti-IPR/1.0", "Accept": "text/html,application/pdf,application/zip,*/*"})
     try:
         response_context = DIRECT_OPENER.open(request, timeout=timeout)
-    except (urllib.error.URLError, urllib.error.HTTPError) as direct_error:
-        print(f"Прямой доступ к {url} не удался ({direct_error}); повтор через прокси", file=sys.stderr)
-        response_context = urllib.request.urlopen(request, timeout=timeout)
+    except urllib.error.URLError as direct_error:
+        if not isinstance(direct_error.reason, ssl.SSLCertVerificationError):
+            raise
+        print(f"SSL-сертификат {url} не прошёл проверку; повтор прямого запроса без проверки сертификата", file=sys.stderr)
+        response_context = INSECURE_DIRECT_OPENER.open(request, timeout=timeout)
     with response_context as response:
         data = response.read()
         encoding = (response.headers.get("Content-Encoding") or "").lower()
